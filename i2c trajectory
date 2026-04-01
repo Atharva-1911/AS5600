@@ -1,0 +1,117 @@
+#include <Arduino.h>
+#include <Wire.h>
+
+#define STEP_PIN 18
+#define DIR_PIN  19
+
+#define AS5600_ADDR 0x36
+
+float stepsPerDeg = 1600.0 / 360.0;
+
+int angles[] = {70, 200, 140, 280, 10};
+int times[]  = {2000, 1000, 1500, 2500, 2000};
+
+float zeroOffset = 0;
+
+//  Read raw angle
+uint16_t readRawAngle() {
+  Wire.beginTransmission(AS5600_ADDR);
+  Wire.write(0x0C);
+  Wire.endTransmission();
+
+  Wire.requestFrom(AS5600_ADDR, 2);
+
+  uint16_t high = Wire.read();
+  uint16_t low  = Wire.read();
+
+  return (high << 8) | low;
+}
+
+//  Convert to degrees
+float getAngle() {
+  uint16_t raw = readRawAngle();
+
+  float angle = (raw / 4096.0) * 360.0;
+
+  angle = angle - zeroOffset;
+
+  if (angle < 0) angle += 360;
+
+  return angle;
+}
+
+//  Motor run using delay (your method)
+void runMotorSteps(int steps, bool dir, int pulseDelayUs) {
+
+  digitalWrite(DIR_PIN, dir);
+ 
+  unsigned long lastReadTime = 0;
+  unsigned long startTime = millis();
+
+  for (int i = 0; i < steps; i++) {
+
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(pulseDelayUs);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(pulseDelayUs);
+
+    //  read every 200 ms
+    if (millis() - lastReadTime >= 200) {
+      unsigned long currentTime = millis() - startTime;
+
+      Serial.print("Time: ");
+      Serial.print(currentTime);
+      Serial.print(" ms | Angle: ");
+      Serial.println(getAngle());
+      lastReadTime = millis();
+    }
+  }
+
+  Serial.print("Final Angle: ");
+  Serial.println(getAngle());
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  Wire.begin(21, 22);
+
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+
+  delay(2000);
+  zeroOffset = (readRawAngle() / 4096.0) * 360.0;
+}
+
+void loop() {
+
+  int currentAngle = 0;
+
+  for (int i = 0; i < 5; i++) {
+
+    int target = angles[i];
+
+    int diff = target - currentAngle;
+
+    bool dir = (diff < 0);
+
+    int steps = abs(diff) * stepsPerDeg;
+
+    int totalTime = times[i];
+
+    //  convert time → delay per pulse
+    int pulseDelayUs = (totalTime * 1000.0) / (2 * steps);
+
+    //  safety limits
+    if (pulseDelayUs < 400) pulseDelayUs = 400;
+    if (pulseDelayUs > 3000) pulseDelayUs = 3000;
+
+    runMotorSteps(steps, dir, pulseDelayUs);
+
+    currentAngle = target;
+
+    delay(1000);
+  }
+
+  while (1);
+}

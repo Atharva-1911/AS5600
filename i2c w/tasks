@@ -1,0 +1,171 @@
+#include <Arduino.h>
+#include <Wire.h>
+
+// ---------------- PINS ----------------
+#define STEP_PIN 18
+#define DIR_PIN  19
+
+#define AS5600_ADDR 0x36
+
+// ---------------- VARIABLES ----------------
+float stepsPerDeg = 1600.0 / 360.0;
+
+int angles[] = {70, 200, 140, 280, 10};
+int rpm = 80;
+
+float zeroOffset = 0;
+
+// 🔥 GLOBAL TIME (NEW)
+unsigned long globalStartTime = 0;
+
+// Shared variable between cores
+volatile float Angle = 0;
+volatile bool runSensor = true;
+
+// ---------------- SENSOR FUNCTIONS ----------------
+
+// Read raw angle
+uint16_t readRawAngle() {
+  Wire.beginTransmission(AS5600_ADDR);
+  Wire.write(0x0C);
+  Wire.endTransmission();
+
+  Wire.requestFrom(AS5600_ADDR, 2);
+
+  uint16_t high = Wire.read();
+  uint16_t low  = Wire.read();
+
+  return (high << 8) | low;
+}
+
+// Convert to degrees
+float getAngle() {
+  uint16_t raw = readRawAngle();
+
+  float angle = (raw / 4096.0) * 360.0;
+
+  angle = angle - zeroOffset;
+
+  if (angle < 0) angle += 360;
+
+  return angle;
+}
+
+// ---------------- SENSOR TASK (CORE 1) ----------------
+
+void SensorTask(void *pvParameters) {
+
+  while (runSensor) {
+    Angle = getAngle();
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+  }
+
+  vTaskDelete(NULL);
+}
+
+// ---------------- MOTOR TASK (CORE 0) ----------------
+
+void MotorTask(void *pvParameters) {
+
+  int currentAngle = 0;
+
+  int pulseDelayUs = (60.0 * 1000000.0) / (rpm * 1600.0 * 2);
+
+  Serial.print("Running at RPM: ");
+  Serial.println(rpm);
+
+  for (int i = 0; i < 5; i++) {
+
+    int target = angles[i];
+
+    int diff = target - currentAngle;
+
+    bool dir = (diff < 0);
+
+    int steps = abs(diff) * stepsPerDeg;
+
+    digitalWrite(DIR_PIN, dir);
+
+    unsigned long lastReadTime = 0;
+
+    for (int s = 0; s < steps; s++) {
+
+      digitalWrite(STEP_PIN, HIGH);
+      delayMicroseconds(pulseDelayUs);
+      digitalWrite(STEP_PIN, LOW);
+      delayMicroseconds(pulseDelayUs);
+
+      // 🔥 CONTINUOUS TIME FIX
+      if (millis() - lastReadTime >= 20) {
+
+        unsigned long currentTime = millis() - globalStartTime;
+
+        Serial.print("Time: ");
+        Serial.print(currentTime);
+        Serial.print(" ms | Angle: ");
+        Serial.println(Angle);
+
+        lastReadTime = millis();
+      }
+    }
+
+    Serial.print("Final Angle: ");
+    Serial.println(Angle);
+
+    currentAngle = target;
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+
+  runSensor = false;
+
+  vTaskDelete(NULL);
+}
+
+// ---------------- SETUP ----------------
+
+void setup() {
+
+  Serial.begin(115200);
+
+  Wire.begin(21, 22);
+
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+
+  delay(2000);
+
+  // 🔥 SET GLOBAL TIME ONCE
+  globalStartTime = millis();
+
+  // Set zero reference
+  zeroOffset = (readRawAngle() / 4096.0) * 360.0;
+
+  // Core 1 → Sensor
+  xTaskCreatePinnedToCore(
+    SensorTask,
+    "Sensor Task",
+    3000,
+    NULL,
+    1,
+    NULL,
+    1
+  );
+
+  // Core 0 → Motor
+  xTaskCreatePinnedToCore(
+    MotorTask,
+    "Motor Task",
+    5000,
+    NULL,
+    1,
+    NULL,
+    0
+  );
+}
+
+// ---------------- LOOP ----------------
+
+void loop() {
+  // empty
+}

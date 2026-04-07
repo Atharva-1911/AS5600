@@ -1,0 +1,140 @@
+#include <Arduino.h>
+#include <Wire.h>
+
+
+#define STEP 18
+#define DIR 19
+
+#define SDA 21
+#define SCL 22
+#define AS5600_ADDR 0X36
+
+float steps_per_degree = 1600.0 / 360.0;
+float zeroOffset = 0.0;
+
+int targetAngle = 270;
+
+volatile float Angle = 0.0;
+volatile bool runSensor = true;
+
+uint16_t readAngle() {
+ 
+  Wire.write(0x0C);
+  
+
+  Wire.requestFrom(AS5600_ADDR, 2);
+
+  if (Wire.available() < 2) return 0;  // safety
+
+  uint16_t high = Wire.read();
+  uint16_t low = Wire.read();
+
+  return (high << 8) | low;
+}
+
+
+float getAngle(){
+  int raw=readAngle();
+  float angle=(raw*360.0)/4096.0;
+
+  angle = angle - zeroOffset;
+  if(angle<0) angle= angle+360;
+  return angle;
+}
+
+void rotateAngle(int targetAngle, bool dir, float targetTime_s){
+  
+  digitalWrite(DIR, dir);
+  
+  int delays = (targetTime_s*1000000)/(2*targetAngle);
+  
+  for(int i=0; i<targetAngle; i++){
+    digitalWrite(STEP, HIGH);
+    delayMicroseconds(delays);
+    digitalWrite(STEP, LOW);
+    delayMicroseconds(delays);
+  }
+
+}
+
+void SensorTask(void *pvParameters) {
+
+  while (runSensor) {
+
+    Angle = getAngle();  
+    
+    taskYIELD();  // Yield to allow other tasks to run
+
+             
+  }
+
+  vTaskDelete(NULL);
+}
+
+
+void MotorTask(void *pvParameters) {
+  int currentangle =0;
+
+   int target = targetAngle;
+    
+    int diff=target-currentangle;
+
+    int steps=abs(diff)*steps_per_degree;
+  
+    
+    rotateAngle(steps, diff<0 , 3);
+    currentangle=target;
+
+    runSensor = false;
+
+    delay(1000);
+
+  vTaskDelete(NULL);
+}
+
+
+void setup() {
+  pinMode(STEP, OUTPUT);
+  pinMode(DIR, OUTPUT);
+
+  Wire.begin(SDA, SCL);
+  Wire.setClock(1000000); 
+  Serial.begin(921600);
+
+  zeroOffset = getAngle();
+  
+  xTaskCreate(
+    SensorTask, 
+    "Sensor Task", 
+    2048, 
+    NULL, 
+    1, 
+    NULL
+    );
+
+  xTaskCreate(
+    MotorTask, 
+    "Motor Task", 
+    2048, 
+    NULL, 
+    1, 
+    NULL
+    );
+
+
+}
+
+void loop() {
+
+  if (!runSensor) {
+    return;   // stop printing once done
+  }
+
+  unsigned long t = micros();
+
+  Serial.print(t);
+  Serial.print(",");
+  Serial.println(Angle);
+}
+
+

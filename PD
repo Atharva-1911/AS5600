@@ -1,0 +1,126 @@
+#include <Arduino.h>
+#include <Wire.h>
+
+
+#define STEP 18
+#define DIR 19
+
+#define SDA 21
+#define SCL 22
+#define AS5600_ADDR 0x36
+
+
+float targetAngle = 180;   // desired position
+float zeroOffset = 0;
+
+float Kp = 5.0;            
+float Kd = 2.0;
+
+float previousError = 0;
+unsigned long lastTime = 0;
+
+
+
+uint16_t readAngle() {
+  Wire.beginTransmission(AS5600_ADDR);
+  Wire.write(0x0C);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(AS5600_ADDR, 2);
+
+  if (Wire.available() < 2) return 0;
+
+  uint16_t high = Wire.read();
+  uint16_t low = Wire.read();
+
+  return (high << 8) | low;
+}
+
+
+float getAngle() {
+  uint16_t raw = readAngle();
+
+  float angle = (raw * 360.0) / 4096.0;
+
+  
+  angle -= zeroOffset;
+  if (angle < 0) angle += 360;
+
+  return angle;
+}
+
+
+void setup() {
+  pinMode(STEP, OUTPUT);
+  pinMode(DIR, OUTPUT);
+
+  Wire.begin(SDA, SCL);
+  Wire.setClock(400000);   // stable I2C
+
+  Serial.begin(921600);
+
+  delay(1000);
+
+  // set current position as zero
+  zeroOffset = getAngle();
+
+}
+
+
+void loop() {
+
+  float currentAngle = getAngle();
+
+
+  float error = targetAngle - currentAngle;
+
+  if (error > 180) error -= 360;
+  if (error < -180) error += 360;
+
+  
+  unsigned long presentTime = micros();
+  float dt = (presentTime - lastTime) / 1000000.0;
+  lastTime = presentTime;
+
+  
+  float derivative = 0;
+  if (dt > 0) {
+    derivative = (error - previousError) / dt;
+  }
+
+
+  float output = (Kp * error) + (Kd * derivative);
+
+  previousError = error;
+
+  
+  output = constrain(output, -800, 800);
+
+  
+  if (abs(error) < 2) {
+    delay(1000);
+    return;
+  }
+
+  
+  bool dir = (output > 0);
+  digitalWrite(DIR, !dir);
+
+  int speed = abs(output);
+
+  if (speed < 150) speed = 150;
+
+  int delayTime = 1000000 / speed;
+
+ 
+  digitalWrite(STEP, HIGH);
+  delayMicroseconds(delayTime);
+  digitalWrite(STEP, LOW);
+  delayMicroseconds(delayTime);
+
+  
+  Serial.print(currentAngle);
+  Serial.print(",");
+  Serial.print(error);
+  
+}
